@@ -1,9 +1,10 @@
-# Research engine components
+# Research engine components - Optimized for fewer API calls
 from typing import List, Dict, Any, TypedDict
-from langchain_core.messages import HumanMessage, AIMessage
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
+import re
 
 # Define the state structure for the research process
 class AgentState(TypedDict):
@@ -12,114 +13,113 @@ class AgentState(TypedDict):
     research_results: Dict[str, str]
     final_answer: str
 
-# Initialize the LLM
+# Initialize the LLM with quota-friendly settings
 def get_llm():
-    return ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+    return ChatGoogleGenerativeAI(
+        model="gemini-1.5-flash",  # Using smaller model
+        temperature=0.2,         # Lower temperature for more focused responses
+        max_output_tokens=1024,  # Limit token usage
+    )
 
-# Create the prompts
-def create_prompts():
-    question_prompt = ChatPromptTemplate.from_messages([
-        MessagesPlaceholder(variable_name="messages"),
-        ("system", "Break down the user's query into 2-3 specific research questions that would help provide a comprehensive answer. Return only a Python list of strings.")
-    ])
-
-    research_prompt = ChatPromptTemplate.from_messages([
-        ("system", "You are a research assistant. Research the following question and provide a concise answer based on your knowledge."),
-        ("human", "{question}")
-    ])
-
-    synthesis_prompt = ChatPromptTemplate.from_messages([
-        MessagesPlaceholder(variable_name="messages"),
-        ("system", "Based on the following research results, provide a comprehensive answer to the user's original query."),
-        ("system", "Research results: {research_results}")
-    ])
-
-    return question_prompt, research_prompt, synthesis_prompt
-
-# Graph node functions
-def break_down_query(state: AgentState) -> AgentState:
-    """Break down the user query into specific research questions."""
+# Efficient single-call approach for research
+def all_in_one_research(state: AgentState) -> AgentState:
+    """Perform the entire research process in a single API call to save quota"""
     llm = get_llm()
-    question_prompt, _, _ = create_prompts()
     
-    response = question_prompt.invoke({"messages": state["messages"]})
-    result = llm.invoke(response)
+    # Get the user's original query
+    user_query = state["messages"][0].content
     
-    # Parse the list of questions from the response
-    try:
-        # Try to parse as a Python list
-        import ast
-        content = result.content.strip()
-        if content.startswith("```") and content.endswith("```"):
-            content = content[3:-3].strip()
-        if content.startswith("python"):
-            content = content[6:].strip()
-        questions = ast.literal_eval(content)
-    except Exception:
-        # Fallback if parsing fails
-        import re
-        questions = re.findall(r'\d+\.\s*(.*?)(?=\n\d+\.|\n\n|$)', result.content)
-        if not questions:
-            questions = [line.strip() for line in result.content.split('\n') if line.strip()]
-        
-    return {"questions": questions}
-
-def conduct_research(state: AgentState) -> AgentState:
-    """Research each question and gather results."""
-    llm = get_llm()
-    _, research_prompt, _ = create_prompts()
+    # Create a comprehensive prompt that handles all steps
+    system_message = f"""
+    You are a research assistant analyzing this question: "{user_query}"
     
+    Follow these steps:
+    1. Break down the user's query into 2-3 specific research questions.
+    2. For each question, provide a concise answer based on your knowledge.
+    3. Finally, synthesize a comprehensive answer to the original query.
+    
+    Format your response exactly as follows:
+    RESEARCH QUESTIONS:
+    - Question 1
+    - Question 2
+    
+    RESEARCH FINDINGS:
+    Question 1: Your answer to question 1.
+    Question 2: Your answer to question 2.
+    
+    FINAL ANSWER:
+    Your synthesized answer to the original question.
+    """
+    
+    # Fixed: Creating proper messages for Gemini
+    messages = [
+        SystemMessage(content=system_message),
+        HumanMessage(content=user_query)
+    ]
+    
+    # Invoke the LLM with the properly formatted messages
+    result = llm.invoke(messages)
+    
+    # Parse the response into our expected format
+    content = result.content
+    
+    # Extract questions
+    questions = []
     research_results = {}
+    final_answer = ""
     
-    for question in state["questions"]:
-        prompt = research_prompt.invoke({"question": question})
-        result = llm.invoke(prompt)
-        research_results[question] = result.content
-        
-    return {"research_results": research_results}
-
-def synthesize_answer(state: AgentState) -> AgentState:
-    """Synthesize research results into a comprehensive answer."""
-    llm = get_llm()
-    _, _, synthesis_prompt = create_prompts()
+    # Parse the questions
+    if "RESEARCH QUESTIONS:" in content:
+        questions_section = content.split("RESEARCH QUESTIONS:")[1].split("RESEARCH FINDINGS:")[0].strip()
+        questions = [q.strip()[2:] for q in questions_section.split("\n") if q.strip().startswith("- ")]
     
-    response = synthesis_prompt.invoke({
-        "messages": state["messages"],
-        "research_results": state["research_results"]
-    })
-    result = llm.invoke(response)
+    # Parse research findings
+    if "RESEARCH FINDINGS:" in content:
+        findings_section = content.split("RESEARCH FINDINGS:")[1].split("FINAL ANSWER:")[0].strip()
+        # Match each question and its answer
+        for question in questions:
+            pattern = re.escape(question) + r":(.*?)(?=" + "|".join([re.escape(q) + ":" for q in questions if q != question]) + "|$)"
+            matches = re.search(pattern, findings_section, re.DOTALL)
+            if matches:
+                research_results[question] = matches.group(1).strip()
+            else:
+                # Fallback if regex fails
+                research_results[question] = "No specific findings available."
     
-    final_message = AIMessage(content=result.content)
+    # Parse final answer
+    if "FINAL ANSWER:" in content:
+        final_answer = content.split("FINAL ANSWER:")[1].strip()
+    
+    # Create final message
+    final_message = AIMessage(content=final_answer)
     
     return {
         "messages": state["messages"] + [final_message],
-        "final_answer": result.content
+        "questions": questions,
+        "research_results": research_results,
+        "final_answer": final_answer
     }
 
-# Build the research graph
+# Build the research graph with a single node to reduce API calls
 def create_research_graph():
-    """Create and compile the research workflow graph."""
+    """Create and compile a simplified research workflow graph using one node"""
     workflow = StateGraph(AgentState)
     
-    # Add nodes
-    workflow.add_node("break_down_query", break_down_query)
-    workflow.add_node("conduct_research", conduct_research)
-    workflow.add_node("synthesize_answer", synthesize_answer)
+    # Add a single node that does all research steps in one call
+    workflow.add_node("research", all_in_one_research)
     
-    # Define the edges
-    workflow.add_edge("break_down_query", "conduct_research")
-    workflow.add_edge("conduct_research", "synthesize_answer")
-    workflow.add_edge("synthesize_answer", END)
+    # Direct connection from research to end
+    workflow.add_edge("research", END)
     
     # Set the entry point
-    workflow.set_entry_point("break_down_query")
+    workflow.set_entry_point("research")
     
     # Compile the graph
     return workflow.compile()
 
 # Initialize the research state
 def initialize_research_state(query):
-    """Create the initial state for the research process."""
+    """Create the initial state for the research process"""
     return {
         "messages": [HumanMessage(content=query)],
         "questions": [],

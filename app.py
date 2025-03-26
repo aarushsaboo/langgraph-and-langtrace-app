@@ -1,4 +1,4 @@
-# Gemini Research Assistant with Langraph
+# Gemini Research Assistant with Langraph - Optimized for fewer API calls
 import os
 import time
 import sys
@@ -9,11 +9,11 @@ from ui_components import setup_streamlit_ui, display_results, display_error, se
 from research_engine import create_research_graph, initialize_research_state
 
 # Configure API key for Google Generative AI
-GOOGLE_API_KEY = "AIzaSyDOG4Eg8m9Bt0SwcGfEFEmuhHgbbUl6Ndg"
+GOOGLE_API_KEY = "AIzaSyC5zEinq8gaFKWr33_Mjusxbm-fyYS0YZA"  # Replace with your key
 os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
 
-# Configure LLM model
-LLM_MODEL = "gemini-1.5-flash"
+# Configure LLM model - using smaller model to reduce quota usage
+LLM_MODEL = "gemini-1.0-pro"
 
 # Check if langtrace is available
 try:
@@ -37,17 +37,14 @@ def process_research_query(query, enable_tracing=False):
         
         # Step 3: Execute the graph with or without tracing
         if enable_tracing and LANGTRACE_AVAILABLE:
-            result = run_with_tracing(graph, initial_state)
+            result, trace_url = run_with_tracing(graph, initial_state)
+            return result, time.time() - start_time, None, trace_url
         else:
             result = graph.invoke(initial_state)
-        
-        # Step 4: Calculate processing time
-        processing_time = time.time() - start_time
-        
-        return result, processing_time
+            return result, time.time() - start_time, None, None
     
     except Exception as e:
-        return None, None, e
+        return None, None, e, None
 
 def run_with_tracing(graph, initial_state):
     """Execute the graph with tracing enabled"""
@@ -74,15 +71,14 @@ def run_web_interface():
     # Step 3: Process the query when requested
     if st.button("Research") and query:
         with st.spinner("Researching your question..."):
-            result, processing_time, error = process_research_query(query, enable_tracing)
+            result, processing_time, error, trace_url = process_research_query(query, enable_tracing)
             
             if error:
                 display_error(st, error)
             else:
+                if trace_url and LANGTRACE_AVAILABLE:
+                    st.sidebar.success(f"Trace URL: {trace_url}")
                 display_results(st, result, processing_time)
-    
-    # elif st.button("Research 2") and not query:
-    #     st.warning("Please enter a question.")
 
 def run_cli():
     """Run the command line interface"""
@@ -91,7 +87,7 @@ def run_cli():
     
     print("\nResearching your question...")
     
-    result, processing_time, error = process_research_query(query)
+    result, processing_time, error, _ = process_research_query(query)
     
     if error:
         print(f"An error occurred: {error}")

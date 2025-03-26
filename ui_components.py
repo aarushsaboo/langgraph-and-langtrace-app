@@ -2,7 +2,7 @@
 import traceback
 
 def setup_streamlit_ui(model_name):
-    """Set up the Streamlit UI components."""
+    """Set up the Streamlit UI components"""
     import streamlit as st
     
     st.set_page_config(page_title="Research Assistant with Gemini", layout="wide")
@@ -13,6 +13,7 @@ def setup_streamlit_ui(model_name):
     # Model info
     st.sidebar.header("Model Configuration")
     st.sidebar.info(f"Using model: {model_name}")
+    st.sidebar.warning("This version is optimized to reduce API calls and avoid quota limits")
     
     # Get user input
     query = st.text_input("Your question:")
@@ -20,7 +21,7 @@ def setup_streamlit_ui(model_name):
     return st, query
 
 def setup_tracing(st):
-    """Set up tracing configuration in the Streamlit UI."""
+    """Set up tracing configuration in the Streamlit UI"""
     enable_tracing = st.sidebar.checkbox("Enable Langtrace visualization", value=False)
     
     if enable_tracing:
@@ -38,7 +39,7 @@ def setup_tracing(st):
     return False
 
 def display_results(st, result, processing_time):
-    """Display the research results in the Streamlit UI."""
+    """Display the research results in the Streamlit UI"""
     # Create columns for results
     col1, col2 = st.columns([2, 1])
     
@@ -61,10 +62,10 @@ def display_results(st, result, processing_time):
     for i, (question, tab) in enumerate(zip(result["questions"], tabs)):
         with tab:
             st.markdown(f"**Question:** {question}")
-            st.markdown(f"**Research:** {result['research_results'][question]}")
+            st.markdown(f"**Research:** {result['research_results'].get(question, "No findings available")}")
 
 def display_error(st, error):
-    """Display error information in the Streamlit UI."""
+    """Display error information in the Streamlit UI"""
     st.error(f"An error occurred: {str(error)}")
     st.error(f"Error details: {type(error).__name__}")
     st.code(traceback.format_exc())
